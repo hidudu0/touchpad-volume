@@ -1,6 +1,7 @@
 // 터치패드 음량
 // 트랙패드에 네 손가락 올리고 위/아래로 쓸면 음량 조절. 네 손가락일 땐 스크롤 막음.
 // 화면에 보이는 것 없음. 끄기: pkill touchpad / 자동 실행 끄기: 시스템 설정 → 일반 → 로그인 항목
+import AudioToolbox
 import Cocoa
 import ServiceManagement
 import Synchronization
@@ -38,10 +39,21 @@ func sym<T>(_ lib: String, _ name: String, _: T.Type) -> T? {
     dlsym(dlopen("/System/Library/PrivateFrameworks/\(lib).framework/\(lib)", RTLD_NOW), name).map { unsafeBitCast($0, to: T.self) }
 }
 
-// MARK: 음량
+// MARK: 음량 (CoreAudio: AppleScript는 한 번에 16ms + 매번 XProtect 검사라 메인 스레드가 밀림)
+
+// 기본 출력 장치는 매번 새로 읽음 → 이어폰 꽂거나 출력 바꿔도 따라감
+func output(_ selector: AudioObjectPropertySelector) -> (AudioObjectID, AudioObjectPropertyAddress) {
+    var dev = AudioObjectID(0), size = UInt32(MemoryLayout<AudioObjectID>.size)
+    var a = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                       mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &size, &dev)
+    return (dev, AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain))
+}
 
 func volumeNow() -> Double {
-    Double(NSAppleScript(source: "output volume of (get volume settings)")?.executeAndReturnError(nil).int32Value ?? 0) / 100
+    var (dev, a) = output(kAudioHardwareServiceDeviceProperty_VirtualMainVolume), v = Float32(0), size = UInt32(4)
+    AudioObjectGetPropertyData(dev, &a, 0, nil, &size, &v)
+    return Double(v)
 }
 
 var percent = -1
@@ -49,7 +61,10 @@ func setVolume(_ v: Double) {
     let p = Int((v * 100).rounded())
     guard p != percent else { return }
     percent = p
-    NSAppleScript(source: "set volume output volume \(p) without output muted")?.executeAndReturnError(nil)
+    var (dev, a) = output(kAudioHardwareServiceDeviceProperty_VirtualMainVolume), x = Float32(p) / 100
+    AudioObjectSetPropertyData(dev, &a, 0, nil, 4, &x)
+    var (_, m) = output(kAudioDevicePropertyMute), off = UInt32(0)  // 쓸면 음소거 풀림
+    AudioObjectSetPropertyData(dev, &m, 0, nil, 4, &off)
 }
 
 // MARK: 터치 처리
@@ -112,6 +127,7 @@ func installTap() -> Bool {
 
 if CommandLine.arguments.contains("--test") {
     precondition(MemoryLayout<Finger>.stride == 96)
+    precondition((0...1).contains(volumeNow()))  // 읽기만 함, 음량 안 바꿈
     precondition(swipeVolume(0.5, dx: 0, dy: 0.1)! > 0.5 && swipeVolume(0.5, dx: 0.02, dy: -0.1)! < 0.5)
     precondition(swipeVolume(0.9, dx: 0, dy: 5) == 1 && swipeVolume(0.1, dx: 0, dy: -5) == 0)
     precondition(swipeVolume(0.5, dx: 0.2, dy: 0.1) == nil && swipeVolume(0.5, dx: 0, dy: 0) == nil)
