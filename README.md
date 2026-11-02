@@ -84,7 +84,12 @@ let gain = 1.5     // 클수록 조금만 쓸어도 많이 바뀜
 let flipY = false  // 위아래가 반대로 먹으면 true
 ```
 
-다시 빌드하면 손쉬운 사용 권한이 풀릴 수 있습니다. 스크롤이 다시 같이 움직이면, 손쉬운 사용 목록에서 **터치패드** 를 선택해 **−** 로 지운 뒤 `bash 시작.command` 를 다시 실행해 허용하세요.
+다시 빌드하면 손쉬운 사용 권한이 풀립니다. 서명이 바뀌어 macOS 가 다른 앱으로 보기 때문이고, 목록에는 켜진 채로 보여도 동작하지 않습니다. 아래를 실행한 뒤 뜨는 창에서 다시 허용하세요.
+
+```bash
+tccutil reset Accessibility local.touchpad.volume
+bash 시작.command
+```
 
 ## 끄기 / 삭제
 
@@ -96,7 +101,7 @@ pkill touchpad   # 지금 끄기 (다음 로그인 때 다시 켜짐)
 - 완전히 지우기
   1. `pkill touchpad`
   2. 로그인 항목에서 터치패드 제거
-  3. 손쉬운 사용 목록에서 터치패드 제거 (**−**)
+  3. `tccutil reset Accessibility local.touchpad.volume` (손쉬운 사용 권한 제거)
   4. `defaults delete local.touchpad.volume`
   5. 폴더 삭제
 
