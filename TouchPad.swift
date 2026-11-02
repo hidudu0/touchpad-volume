@@ -1,5 +1,5 @@
 // 터치패드 음량
-// 트랙패드에 세 손가락 올리고 위/아래로 쓸면 음량 조절. 세 손가락일 땐 스크롤 막음.
+// 트랙패드에 네 손가락 올리고 위/아래로 쓸면 음량 조절. 네 손가락일 땐 스크롤 막음.
 // 화면에 보이는 것 없음. 끄기: pkill touchpad / 자동 실행 끄기: 시스템 설정 → 일반 → 로그인 항목
 import Cocoa
 import ServiceManagement
@@ -8,14 +8,14 @@ import Synchronization
 let gain = 1.5     // ponytail: 쓸은 거리(트랙패드 높이 = 1) × gain = 음량 변화. 너무 빠르거나 느리면 조정
 let flipY = false  // ponytail: 기기에서 위아래가 반대로 먹으면 true
 
-// 좌우로 더 많이 움직였으면 nil → 세 손가락 좌우 스와이프(화면 전환)는 무시
+// 좌우로 더 많이 움직였으면 nil → 네 손가락 좌우 스와이프(화면 전환)는 무시
 func swipeVolume(_ v0: Double, dx: Double, dy: Double) -> Double? {
     abs(dy) > abs(dx) ? min(max(v0 + dy * gain, 0), 1) : nil
 }
 
-// 세 손가락이면 스크롤 막음. 손 뗀 뒤 이어지는 관성 스크롤은 직전 판단을 따름
+// 네 손가락이면 스크롤 막음. 손 뗀 뒤 이어지는 관성 스크롤은 직전 판단을 따름
 func blocksScroll(fingers: Int, momentum: Bool, wasBlocking: Bool) -> Bool {
-    momentum ? wasBlocking : fingers == 3
+    momentum ? wasBlocking : fingers == 4
 }
 
 // MARK: 비공개 프레임워크 (MultitouchSupport: 손가락 절대좌표)
@@ -58,10 +58,10 @@ struct Swipe { let ids: Set<Int32>; let x0, y0, v0: Double }
 var swipe: Swipe?
 
 func handle(_ touches: [(id: Int32, x: Double, y: Double)]) {
-    guard touches.count == 3 else { swipe = nil; return }
+    guard touches.count == 4 else { swipe = nil; return }
     let ids = Set(touches.map(\.id))
-    let x = touches.map(\.x).reduce(0, +) / 3, y = touches.map(\.y).reduce(0, +) / 3
-    guard let s = swipe, s.ids == ids else {  // 세 손가락 막 닿음 → 지금 위치·음량이 기준
+    let x = touches.map(\.x).reduce(0, +) / 4, y = touches.map(\.y).reduce(0, +) / 4
+    guard let s = swipe, s.ids == ids else {  // 네 손가락 막 닿음 → 지금 위치·음량이 기준
         let v0 = volumeNow()
         swipe = Swipe(ids: ids, x0: x, y0: y, v0: v0)
         percent = Int((v0 * 100).rounded())
@@ -115,8 +115,8 @@ if CommandLine.arguments.contains("--test") {
     precondition(swipeVolume(0.5, dx: 0, dy: 0.1)! > 0.5 && swipeVolume(0.5, dx: 0.02, dy: -0.1)! < 0.5)
     precondition(swipeVolume(0.9, dx: 0, dy: 5) == 1 && swipeVolume(0.1, dx: 0, dy: -5) == 0)
     precondition(swipeVolume(0.5, dx: 0.2, dy: 0.1) == nil && swipeVolume(0.5, dx: 0, dy: 0) == nil)
-    precondition(blocksScroll(fingers: 3, momentum: false, wasBlocking: false) && !blocksScroll(fingers: 2, momentum: false, wasBlocking: true))
-    precondition(blocksScroll(fingers: 0, momentum: true, wasBlocking: true) && !blocksScroll(fingers: 3, momentum: true, wasBlocking: false))
+    precondition(blocksScroll(fingers: 4, momentum: false, wasBlocking: false) && !blocksScroll(fingers: 3, momentum: false, wasBlocking: true))
+    precondition(blocksScroll(fingers: 0, momentum: true, wasBlocking: true) && !blocksScroll(fingers: 4, momentum: true, wasBlocking: false))
     print("ok")
     exit(0)
 }
