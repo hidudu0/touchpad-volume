@@ -1,5 +1,5 @@
 // 터치패드 음량
-// 트랙패드에 네 손가락 올리고 위/아래로 쓸면 음량 조절. 네 손가락일 땐 스크롤 막음.
+// 트랙패드에 네 손가락 같이 올리고 위/아래로 쓸면 음량 조절. 그동안 스크롤 막음.
 // 화면에 보이는 것 없음. 끄기: pkill touchpad / 자동 실행 끄기: 시스템 설정 → 일반 → 로그인 항목
 import AudioToolbox
 import Cocoa
@@ -8,15 +8,36 @@ import Synchronization
 
 let gain = 1.5     // ponytail: 쓸은 거리(트랙패드 높이 = 1) × gain = 음량 변화. 너무 빠르거나 느리면 조정
 let flipY = false  // ponytail: 기기에서 위아래가 반대로 먹으면 true
+let landWindow = 0.15  // ponytail: 네 손가락이 이 시간(초) 안에 닿아야 제스처 시작. 실측값 아님. 제스처가 잘 안 먹으면 키우고, 스크롤 중 오작동하면 줄임
 
 // 좌우로 더 많이 움직였으면 nil → 네 손가락 좌우 스와이프(화면 전환)는 무시
 func swipeVolume(_ v0: Double, dx: Double, dy: Double) -> Double? {
     abs(dy) > abs(dx) ? min(max(v0 + dy * gain, 0), 1) : nil
 }
 
-// 네 손가락이면 스크롤 막음. 손 뗀 뒤 이어지는 관성 스크롤은 직전 판단을 따름
-func blocksScroll(fingers: Int, momentum: Bool, wasBlocking: Bool) -> Bool {
-    momentum ? wasBlocking : fingers == 4
+// 가장 덜 움직인 손가락 기준. 방향이 갈리거나 멈춘 손가락이 있으면 0 → 스크롤 중 가만히 닿은 엄지·손바닥으로는 음량 안 바뀜
+func commonMove(_ moves: [Double]) -> Double {
+    if moves.allSatisfy({ $0 > 0 }) { return moves.min() ?? 0 }
+    if moves.allSatisfy({ $0 < 0 }) { return moves.max() ?? 0 }
+    return 0
+}
+
+// 네 손가락이 landWindow 안에 같이 닿아야 제스처 시작 → 스크롤 중 뒤늦게 닿은 접촉은 무시.
+// 시작하면 손을 다 뗄 때까지 유지 → 쓸다가 한 손가락이 잠깐 떨어져도 안 끊김
+struct Landings {
+    var times: [Int32: Double] = [:], armed = false
+
+    mutating func update(ids: [Int32], at now: Double) -> Bool {
+        times = ids.reduce(into: [:]) { $0[$1] = times[$1] ?? now }
+        if times.isEmpty { armed = false }
+        if times.count == 4, let first = times.values.min(), let last = times.values.max(), last - first <= landWindow { armed = true }
+        return armed && times.count == 4
+    }
+}
+
+// 제스처 중이면 스크롤 막음. 손 뗀 뒤 이어지는 관성 스크롤은 직전 판단을 따름
+func blocksScroll(active: Bool, momentum: Bool, wasBlocking: Bool) -> Bool {
+    momentum ? wasBlocking : active
 }
 
 // MARK: 비공개 프레임워크 (MultitouchSupport: 손가락 절대좌표)
@@ -69,32 +90,34 @@ func setVolume(_ v: Double) {
 
 // MARK: 터치 처리
 
-struct Swipe { let ids: Set<Int32>; let x0, y0, v0: Double }
+struct Swipe { let start: [Int32: (x: Double, y: Double)]; let v0: Double }
 var swipe: Swipe?
 
-func handle(_ touches: [(id: Int32, x: Double, y: Double)]) {
-    guard touches.count == 4 else { swipe = nil; return }
-    let ids = Set(touches.map(\.id))
-    let x = touches.map(\.x).reduce(0, +) / 4, y = touches.map(\.y).reduce(0, +) / 4
-    guard let s = swipe, s.ids == ids else {  // 네 손가락 막 닿음 → 지금 위치·음량이 기준
+func handle(_ touches: [(id: Int32, x: Double, y: Double)], active: Bool) {
+    guard active else { swipe = nil; return }
+    guard let s = swipe, touches.allSatisfy({ s.start[$0.id] != nil }) else {  // 제스처 막 시작 → 지금 위치·음량이 기준
         let v0 = volumeNow()
-        swipe = Swipe(ids: ids, x0: x, y0: y, v0: v0)
+        swipe = Swipe(start: touches.reduce(into: [:]) { $0[$1.id] = ($1.x, $1.y) }, v0: v0)
         percent = Int((v0 * 100).rounded())
         return
     }
-    if let v = swipeVolume(s.v0, dx: x - s.x0, dy: y - s.y0) { setVolume(v) }
+    let dx = touches.map { $0.x - s.start[$0.id]!.x }.reduce(0, +) / 4
+    let dy = commonMove(touches.map { $0.y - s.start[$0.id]!.y })
+    if let v = swipeVolume(s.v0, dx: dx, dy: dy) { setVolume(v) }
 }
 
-let fingerCount = Atomic<Int>(0)  // 트랙패드 스레드에서 쓰고 이벤트 탭에서 읽음
+var landings = Landings()  // 트랙패드 스레드에서만 씀
+let gestureActive = Atomic<Bool>(false)  // 트랙패드 스레드에서 쓰고 이벤트 탭에서 읽음
 
-let touchCallback: MTCallback = { _, data, n, _, _ in
+let touchCallback: MTCallback = { _, data, n, time, _ in
     guard let data else { return 0 }
     let fingers = UnsafeBufferPointer(start: data.assumingMemoryBound(to: Finger.self), count: Int(n))
     let touches = fingers.filter { $0.state == 3 || $0.state == 4 }.map {
         (id: $0.identifier, x: Double($0.normalized.pos.x), y: Double(flipY ? 1 - $0.normalized.pos.y : $0.normalized.pos.y))
     }
-    fingerCount.store(touches.count, ordering: .relaxed)  // 스크롤 이벤트보다 늦지 않게 바로 기록
-    DispatchQueue.main.async { handle(touches) }
+    let active = landings.update(ids: touches.map(\.id), at: time)
+    gestureActive.store(active, ordering: .relaxed)  // 스크롤 이벤트보다 늦지 않게 바로 기록
+    DispatchQueue.main.async { handle(touches, active: active) }
     return 0
 }
 
@@ -108,7 +131,7 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
         if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
     }
-    blockingScroll = blocksScroll(fingers: fingerCount.load(ordering: .relaxed),
+    blockingScroll = blocksScroll(active: gestureActive.load(ordering: .relaxed),
                                   momentum: event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0,
                                   wasBlocking: blockingScroll)
     return blockingScroll ? nil : Unmanaged.passUnretained(event)
@@ -131,8 +154,30 @@ if CommandLine.arguments.contains("--test") {
     precondition(swipeVolume(0.5, dx: 0, dy: 0.1)! > 0.5 && swipeVolume(0.5, dx: 0.02, dy: -0.1)! < 0.5)
     precondition(swipeVolume(0.9, dx: 0, dy: 5) == 1 && swipeVolume(0.1, dx: 0, dy: -5) == 0)
     precondition(swipeVolume(0.5, dx: 0.2, dy: 0.1) == nil && swipeVolume(0.5, dx: 0, dy: 0) == nil)
-    precondition(blocksScroll(fingers: 4, momentum: false, wasBlocking: false) && !blocksScroll(fingers: 3, momentum: false, wasBlocking: true))
-    precondition(blocksScroll(fingers: 0, momentum: true, wasBlocking: true) && !blocksScroll(fingers: 4, momentum: true, wasBlocking: false))
+    precondition(blocksScroll(active: true, momentum: false, wasBlocking: false) && !blocksScroll(active: false, momentum: false, wasBlocking: true))
+    precondition(blocksScroll(active: false, momentum: true, wasBlocking: true) && !blocksScroll(active: true, momentum: true, wasBlocking: false))
+
+    // 네 손가락 모두 같은 방향일 때만 움직임으로 침
+    precondition(commonMove([0.1, 0.2, 0.15, 0.12]) == 0.1 && commonMove([-0.1, -0.2, -0.15, -0.12]) == -0.1)
+    precondition(commonMove([0.2, 0.2, 0, 0]) == 0 && commonMove([0.2, 0.2, 0.1, -0.01]) == 0)
+
+    // 두 손가락 스크롤 중 뒤늦게 두 개 더 닿음: 제스처 아님
+    var l = Landings()
+    _ = l.update(ids: [1, 2], at: 0)
+    precondition(!l.update(ids: [1, 2, 3, 4], at: 1))
+    // 네 손가락 같이 닿음: 제스처. 세 손가락이면 멈추고, 한 손가락 다시 닿으면 이어감
+    l = Landings()
+    _ = l.update(ids: [1, 2], at: 0)
+    precondition(l.update(ids: [1, 2, 3, 4], at: 0.1))
+    precondition(!l.update(ids: [1, 2, 3], at: 0.2) && l.update(ids: [1, 2, 3, 5], at: 0.3))
+    // 다 뗀 뒤에는 초기화: 천천히 올린 네 손가락은 제스처 아님
+    _ = l.update(ids: [], at: 0.4)
+    _ = l.update(ids: [6, 7, 8], at: 1)
+    precondition(!l.update(ids: [6, 7, 8, 9], at: 2))
+    // 손바닥 얹은 채 네 손가락 닿고 손바닥만 뗌: 제스처
+    l = Landings()
+    _ = l.update(ids: [9], at: 0)
+    precondition(!l.update(ids: [9, 1, 2, 3, 4], at: 5) && l.update(ids: [1, 2, 3, 4], at: 6))
     print("ok")
     exit(0)
 }
